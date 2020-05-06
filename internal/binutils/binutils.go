@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -120,6 +121,29 @@ func (bu *Binutils) SetTools(config string) {
 	bu.update(func(r *binrep) { initTools(r, config) })
 }
 
+func ensureObjdumpVersion(objdump string, objdumpFound bool) (string, bool) {
+	if !objdumpFound || runtime.GOOS != "darwin" {
+		return objdump, objdumpFound
+	}
+
+	// Ensure objdump is at least version 9.0 on Mac OS
+	cmdOut, err := exec.Command(objdump, "-version").Output()
+	if err != nil {
+		return objdump, false
+	}
+
+	re := regexp.MustCompile(`.*version (([0-9]*)\.([0-9]*)\.([0-9]*)).*$`)
+	fields := re.FindStringSubmatch(strings.Split(string(cmdOut), "\n")[0])
+	if len(fields) != 5 {
+		return objdump, false
+	}
+
+	if ver, _ := strconv.Atoi(fields[2]); ver < 9 {
+		return objdump, false
+	}
+	return objdump, objdumpFound
+}
+
 func initTools(b *binrep, config string) {
 	// paths collect paths per tool; Key "" contains the default.
 	paths := make(map[string][]string)
@@ -140,7 +164,7 @@ func initTools(b *binrep, config string) {
 		b.addr2line, b.addr2lineFound = findExe("gaddr2line", append(paths["addr2line"], defaultPath...))
 	}
 	b.nm, b.nmFound = findExe("nm", append(paths["nm"], defaultPath...))
-	b.objdump, b.objdumpFound = findExe("objdump", append(paths["objdump"], defaultPath...))
+	b.objdump, b.objdumpFound = ensureObjdumpVersion(findExe("objdump", append(paths["objdump"], defaultPath...)))
 }
 
 // findExe looks for an executable command on a set of paths.
@@ -159,9 +183,18 @@ func findExe(cmd string, paths []string) (string, bool) {
 // of a binary.
 func (bu *Binutils) Disasm(file string, start, end uint64, intelSyntax bool) ([]plugin.Inst, error) {
 	b := bu.get()
+	if !b.objdumpFound {
+		return nil, fmt.Errorf("couldn't find objdump")
+	}
 	args := []string{"-d", "-C", "--no-show-raw-insn", "-l",
 		fmt.Sprintf("--start-address=%#x", start),
 		fmt.Sprintf("--stop-address=%#x", end)}
+
+	if runtime.GOOS == "darwin" {
+		args = []string{"-disassemble-all", "-no-show-raw-insn",
+			"-line-numbers", fmt.Sprintf("-start-address=%#x", start),
+			fmt.Sprintf("-stop-address=%#x", end)}
+	}
 
 	if intelSyntax {
 		if runtime.GOOS == "darwin" {

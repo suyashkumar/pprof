@@ -18,10 +18,12 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -189,14 +191,39 @@ func skipUnlessDarwinAmd64(t *testing.T) {
 }
 
 func testDisasm(t *testing.T, intelSyntax bool) {
+	if runtime.GOOS == "darwin" {
+		// get objdump version and skip test if < 9.0
+		// binutils does not export get(). Try to get objdump version on our own.
+		// only works if objdump is in path.
+		cmdOut, err := exec.Command("objdump", "-version").Output()
+		if err != nil {
+			t.Skip("cannot determine objdump version.", err)
+		}
+
+		re := regexp.MustCompile(`.*version (([0-9]*)\.([0-9]*)\.([0-9]*)).*$`)
+		fields := re.FindStringSubmatch(strings.Split(string(cmdOut), "\n")[0])
+		if len(fields) != 5 {
+			t.Skip("cannot determine objdump version.", fields)
+		}
+
+		if ver, _ := strconv.Atoi(fields[2]); ver < 9 {
+			t.Skip("objdump version too old. ", fields[0])
+		}
+	}
+
 	bu := &Binutils{}
-	insts, err := bu.Disasm(filepath.Join("testdata", "exe_linux_64"), 0, math.MaxUint64, intelSyntax)
+	testexe := "exe_linux_64"
+	if runtime.GOOS == "darwin" {
+		testexe = "exe_mac_64"
+	}
+
+	insts, err := bu.Disasm(filepath.Join("testdata", testexe), 0, math.MaxUint64, intelSyntax)
 	if err != nil {
 		t.Fatalf("Disasm: unexpected error %v", err)
 	}
 	mainCount := 0
 	for _, x := range insts {
-		if x.Function == "main" {
+		if x.Function == "main" || x.Function == "_main" {
 			mainCount++
 		}
 	}
@@ -206,7 +233,9 @@ func testDisasm(t *testing.T, intelSyntax bool) {
 }
 
 func TestDisasm(t *testing.T) {
-	skipUnlessLinuxAmd64(t)
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("This test only works on Linux or Mac")
+	}
 	testDisasm(t, true)
 	testDisasm(t, false)
 }
